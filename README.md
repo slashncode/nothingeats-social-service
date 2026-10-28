@@ -1,52 +1,35 @@
-# nothingeats-kotlin-service-template
+# nothingeats-social-service
 
-Template for a NothingEats bounded-context service: Kotlin, Ktor, hexagonal Gradle modules, kotlin-inject, Postgres. It builds, tests and runs out of the box with a small `Item` example that shows every pattern.
+Social bounded context of [NothingEats](https://github.com/slashncode/nothingeats): an anonymous live feed of what everyone is not eating, and a weekly XP leaderboard under pseudonyms.
 
-Part of [NothingEats](https://github.com/slashncode/nothingeats).
+## What it does
 
-## Create a service
+- **Feed**: every placed order, levels from 3 on and gold badges become a feed line ("someone did not eat 2 dishes from Phantom Pizza"). Anonymous by construction: no name, no place, no account. The service keeps the user id with a line only to erase it; it never leaves the service. The newest 100 lines are kept.
+- **Live**: new lines go to every open feed stream through Valkey pub/sub, so the pod that consumed the event does not need to hold the browser's connection.
+- **Leaderboard**: XP per ISO week (Monday to Sunday, Hamburg time) in a Valkey sorted set per week, only for customers who joined. Joining picks a random pseudonym ("Satter Seehund 42" / "Full Seal 42"), kept when leaving and joining again; leaving takes them off this week's board at once. Boards expire after six weeks.
+- **GDPR**: `user.deleted` erases the player, their feed lines and their places on recent boards.
 
-1. **Use this template** on GitHub → `nothingeats-<context>-service`, clone it next to the other repos.
-2. `scripts/init-service.sh <context>` renames packages, project and image. CI pushes a signed image on main automatically in every repo created from the template.
-3. Replace the `Item` example with the real domain.
+## API (`/api/social/v1`)
 
-## Modules
+| Method | Path | Auth | What |
+|---|---|---|---|
+| `GET` | `/feed?limit=` | – | Newest feed lines (default 20, at most 50) |
+| `GET` | `/feed/stream` | – | Server-sent events: `ready`, then `feed.item` per new line, a `: ping` every 15 s |
+| `GET` | `/leaderboard` | – | This week's top 10: rank, pseudonym (in `?lang=` or Accept-Language), XP |
+| `GET` | `/me` | signed in | Own pseudonym, whether on the board, this week's XP and rank |
+| `PUT` | `/me/leaderboard` | signed in | `{join: true|false}` |
 
-| Module | Contains | May depend on |
-|---|---|---|
-| `domain` | Aggregates, value objects, domain exceptions | nothing (pure Kotlin) |
-| `application` | Use cases, ports (`ItemRepository`), test fixtures (in-memory port implementations) | `domain`, `platform-core` |
-| `adapters` | Ktor routes, Exposed repositories, Flyway migrations (`db/migration`) | `application`, `platform-http`, `platform-persistence` |
-| `app` | kotlin-inject composition root, typed config, `main`, logging config | everything |
+Consumes `ordering.order.v1` (`placed`), `loyalty.reward.v1` (`reward.earned`) and `identity.user.v1` (`user.deleted`). Publishes no events.
 
-The module graph enforces the dependency direction at compile time; Konsist tests in `app` cover the rest (domain imports, HTTP adapters never touching persistence).
+Share cards (server-rendered images) are not built yet: they need fonts in the distroless image.
 
 ## Run
 
-One image, three modes: `serve` (default), `migrate`, `cron <task>`.
-
-```bash
-./gradlew build                     # compile, ktlint, tests (Docker needed for Testcontainers)
-
-export DATABASE__URL=jdbc:postgresql://localhost:15432/example DATABASE__USER=example DATABASE__PASSWORD=...
-./gradlew :app:run --args=migrate   # apply migrations
-./gradlew :app:run                  # serve on :8080, readable logs
-
-# In the k3d cluster, from the hub repo: Flux steps aside, Tilt rebuilds and redeploys on every change
-just dev <context>-service           # stop with: just dev-stop <context>-service
-
-./gradlew :app:jibDockerBuild -Djib.from.platforms=linux/arm64   # local image
+```sh
+./gradlew build                       # needs Docker (Testcontainers: Postgres, Kafka, Valkey)
+./gradlew :app:run --args=migrate     # DATABASE__URL, DATABASE__USER, DATABASE__PASSWORD
+./gradlew :app:run                    # VALKEY__HOST/PORT/PASSWORD, KAFKA__BOOTSTRAP_SERVERS
 ```
-
-Configuration comes from env vars only: `__` nests, `_` separates words (`HTTP__PORT`, `DATABASE__MAXIMUM_POOL_SIZE`, `LIFECYCLE__DRAIN_DELAY`). Missing values stop the service at startup with a full report.
-
-## What the example shows
-
-- Domain rules as plain exceptions (`InvalidItemName`, `ItemNameTaken`), mapped to `AppError` in the use cases.
-- A unique constraint mapped to a domain exception by SQLSTATE and constraint name, surfacing as `409 ITEM_NAME_TAKEN`.
-- RFC 9457 problem responses with stable codes and the request id.
-- Lifecycle components, health checks and routes collected with `@IntoSet` in `ServiceComponent`.
-- A smoke test that wires the real composition root against real Postgres.
 
 ## License
 
